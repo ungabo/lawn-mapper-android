@@ -2,9 +2,7 @@
 
 Native Android lawn annotation app.
 
-The launcher now opens AR ground-lock mode. It uses ARCore to detect horizontal ground/lawn planes and anchors points, boxes, circles, and freehand shapes in 3D space so they stay on the lawn as you move the phone.
-
-The older Camera2 GPS/heading overlay is still available from the `2D` toolbar button as a fallback.
+The app uses ARCore to detect horizontal ground/lawn planes and anchors points, boxes, circles, and freehand shapes in 3D space so they stay on the lawn as you move the phone.
 
 ## Build
 
@@ -32,7 +30,7 @@ The repo also keeps the latest checked-in APK at:
 apk\lawnmapper-debug.apk
 ```
 
-Snapshots are saved into the phone gallery under `Pictures/LawnMapper`.
+Snapshots are taken directly from AR mode and saved into the phone gallery under `Pictures/LawnMapper`. Use `Menu > View snapshots` to view and share them.
 
 ## AR Ground Lock
 
@@ -44,3 +42,14 @@ In AR mode:
 4. The shape is stored as local 3D coordinates attached to an ARCore anchor.
 
 This locks shapes while the AR session is running. Reopening the app later and restoring exact lawn positions still requires ARCore Geospatial/VPS setup; see `docs/arcore-geospatial-requirements.md`.
+
+## Controls
+
+- `Snap`: save the camera image with AR shapes and labels.
+- `Point`: tap the lawn for a labeled dot.
+- `Box`: drag across a lawn area.
+- `Circle`: drag across a circular or oval area.
+- `Free`: draw an irregular outline.
+- `Erase`: tap or drag through a shape to remove it.
+- `Edit`: tap a shape or label to rename or delete it.
+- `Menu`: view/share snapshots, open Help, or clear anchors.

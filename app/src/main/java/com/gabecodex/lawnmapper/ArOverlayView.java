@@ -129,12 +129,16 @@ public final class ArOverlayView extends View {
     @Override
     protected void onDraw(Canvas canvas) {
         super.onDraw(canvas);
-        for (ArProjectedAnnotation annotation : projected) {
-            drawAnnotation(canvas, annotation);
-        }
+        drawSnapshot(canvas);
         drawDraft(canvas);
         if (mode == AnnotationOverlayView.Mode.ERASE && eraserPoint != null) {
             canvas.drawCircle(eraserPoint.x, eraserPoint.y, eraserRadiusPx, eraserPaint);
+        }
+    }
+
+    void drawSnapshot(Canvas canvas) {
+        for (ArProjectedAnnotation annotation : projected) {
+            drawAnnotation(canvas, annotation);
         }
     }
 

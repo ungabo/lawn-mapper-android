@@ -5,6 +5,8 @@ import android.app.Activity;
 import android.app.AlertDialog;
 import android.content.Intent;
 import android.content.pm.PackageManager;
+import android.graphics.Bitmap;
+import android.graphics.Canvas;
 import android.graphics.Color;
 import android.graphics.PointF;
 import android.opengl.GLSurfaceView;
@@ -12,6 +14,7 @@ import android.os.Bundle;
 import android.os.Handler;
 import android.text.InputType;
 import android.view.Gravity;
+import android.view.PixelCopy;
 import android.view.View;
 import android.view.Window;
 import android.view.WindowManager;
@@ -132,13 +135,22 @@ public final class ArLawnActivity extends Activity implements ArOverlayView.Call
         statusText.setTextSize(13f);
         statusText.setSingleLine(true);
         statusText.setGravity(Gravity.CENTER_VERTICAL);
-        statusText.setPadding(dp(12), dp(8), dp(12), dp(8));
+        statusText.setPadding(dp(12), dp(8), dp(92), dp(8));
         statusText.setBackgroundColor(Color.argb(185, 0, 0, 0));
         root.addView(statusText, new FrameLayout.LayoutParams(
                 FrameLayout.LayoutParams.MATCH_PARENT,
                 FrameLayout.LayoutParams.WRAP_CONTENT,
                 Gravity.TOP
         ));
+        Button menuButton = makeToolbarButton("Menu");
+        menuButton.setOnClickListener(v -> showMenu());
+        FrameLayout.LayoutParams menuParams = new FrameLayout.LayoutParams(
+                FrameLayout.LayoutParams.WRAP_CONTENT,
+                FrameLayout.LayoutParams.WRAP_CONTENT,
+                Gravity.TOP | Gravity.RIGHT
+        );
+        menuParams.setMargins(0, dp(3), dp(6), 0);
+        root.addView(menuButton, menuParams);
 
         HorizontalScrollView toolbarScroll = new HorizontalScrollView(this);
         toolbarScroll.setHorizontalScrollBarEnabled(false);
@@ -149,14 +161,13 @@ public final class ArLawnActivity extends Activity implements ArOverlayView.Call
         toolbar.setPadding(dp(8), dp(7), dp(8), dp(7));
         toolbarScroll.addView(toolbar);
 
+        addActionButton(toolbar, "Snap", v -> takeSnapshot());
         addModeButton(toolbar, "Point", AnnotationOverlayView.Mode.POINT);
         addModeButton(toolbar, "Box", AnnotationOverlayView.Mode.BOX);
         addModeButton(toolbar, "Circle", AnnotationOverlayView.Mode.CIRCLE);
         addModeButton(toolbar, "Free", AnnotationOverlayView.Mode.FREEHAND);
         addModeButton(toolbar, "Erase", AnnotationOverlayView.Mode.ERASE);
         addModeButton(toolbar, "Edit", AnnotationOverlayView.Mode.EDIT);
-        addActionButton(toolbar, "Clear", v -> confirmClear());
-        addActionButton(toolbar, "2D", v -> startActivity(new Intent(this, MainActivity.class)));
 
         root.addView(toolbarScroll, new FrameLayout.LayoutParams(
                 FrameLayout.LayoutParams.MATCH_PARENT,
@@ -254,10 +265,78 @@ public final class ArLawnActivity extends Activity implements ArOverlayView.Call
     private void showArUnavailable(String reason) {
         new AlertDialog.Builder(this)
                 .setTitle("AR ground lock unavailable")
-                .setMessage("ARCore could not start (" + reason + "). You can still use the older 2D GPS/heading mode.")
-                .setPositiveButton("Open 2D Mode", (dialog, which) -> startActivity(new Intent(this, MainActivity.class)))
-                .setNegativeButton("Close", null)
+                .setMessage("ARCore could not start (" + reason + "). Install or update Google Play Services for AR, then reopen Lawn Mapper.")
+                .setPositiveButton("Close", null)
                 .show();
+    }
+
+    private void showMenu() {
+        String[] items = new String[]{"View snapshots", "Help", "Clear anchors"};
+        new AlertDialog.Builder(this)
+                .setTitle("Menu")
+                .setItems(items, (dialog, which) -> {
+                    if (which == 0) {
+                        startActivity(new Intent(this, SnapshotGalleryActivity.class));
+                    } else if (which == 1) {
+                        showHelp();
+                    } else if (which == 2) {
+                        confirmClear();
+                    }
+                })
+                .show();
+    }
+
+    private void showHelp() {
+        new AlertDialog.Builder(this)
+                .setTitle("How Lawn Mapper Works")
+                .setMessage(
+                        "Scan: Move slowly until the status says AR locked to ground planes.\n\n"
+                                + "Snap: Saves the live camera image with the AR shapes and labels.\n\n"
+                                + "Point: Tap the lawn to add a labeled dot.\n\n"
+                                + "Box: Drag from one corner of a lawn area to the opposite corner.\n\n"
+                                + "Circle: Drag across the area where the circle or oval should sit.\n\n"
+                                + "Free: Draw an irregular outline on the visible lawn.\n\n"
+                                + "Erase: Tap or drag through a shape to delete it.\n\n"
+                                + "Edit: Tap a shape or label to rename or delete it.\n\n"
+                                + "Menu: Opens snapshots, this help screen, and clear-all.\n\n"
+                                + "Shapes lock to the lawn while this AR session is running. Reopening later at the exact same spot still needs the future Geospatial/VPS setup."
+                )
+                .setPositiveButton("OK", null)
+                .show();
+    }
+
+    private void takeSnapshot() {
+        int width = glSurfaceView.getWidth();
+        int height = glSurfaceView.getHeight();
+        if (width <= 0 || height <= 0) {
+            toast("Camera is not ready yet");
+            return;
+        }
+        Bitmap surfaceBitmap = Bitmap.createBitmap(width, height, Bitmap.Config.ARGB_8888);
+        PixelCopy.request(glSurfaceView, surfaceBitmap, result -> {
+            if (result != PixelCopy.SUCCESS) {
+                surfaceBitmap.recycle();
+                toast("Snapshot failed");
+                return;
+            }
+            saveSnapshot(surfaceBitmap);
+        }, handler);
+    }
+
+    private void saveSnapshot(Bitmap surfaceBitmap) {
+        Bitmap combined = Bitmap.createBitmap(surfaceBitmap.getWidth(), surfaceBitmap.getHeight(), Bitmap.Config.ARGB_8888);
+        Canvas canvas = new Canvas(combined);
+        canvas.drawBitmap(surfaceBitmap, 0f, 0f, null);
+        overlayView.drawSnapshot(canvas);
+        try {
+            SnapshotStore.saveSnapshot(this, combined);
+            toast("Snapshot saved");
+        } catch (Exception e) {
+            toast("Snapshot failed");
+        } finally {
+            surfaceBitmap.recycle();
+            combined.recycle();
+        }
     }
 
     private void addModeButton(LinearLayout toolbar, String text, final AnnotationOverlayView.Mode mode) {
