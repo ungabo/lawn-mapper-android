@@ -2,9 +2,9 @@
 
 ## Status
 
-The installed app is the non-ARCore version. It uses Camera2, GPS, and rotation sensors.
+The installed app now includes a local ARCore ground-lock mode. It uses ARCore anchors on detected horizontal planes, so shapes stay locked to the lawn while the AR session is running.
 
-An ARCore version is feasible for this phone, but the persistent version that lets lawn labels relocalize on a later visit needs ARCore Geospatial/VPS authorization through Google Cloud. I did not build that version yet because the app needs a real Google Cloud ARCore API credential that should be owned by the repo/account owner.
+The persistent version that lets lawn labels relocalize on a later visit still needs ARCore Geospatial/VPS authorization through Google Cloud. I did not build that part yet because the app needs a real Google Cloud ARCore API credential that should be owned by the repo/account owner.
 
 ## Why Plain ARCore Is Not Enough
 

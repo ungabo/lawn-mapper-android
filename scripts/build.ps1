@@ -32,6 +32,29 @@ $D8 = Join-Path $BuildTools.FullName "d8.bat"
 $ZipAlign = Join-Path $BuildTools.FullName "zipalign.exe"
 $ApkSigner = Join-Path $BuildTools.FullName "apksigner.bat"
 
+$ArCoreVersion = "1.54.0"
+$ArCoreDir = Join-Path $Root "deps\arcore"
+$ArCoreAar = Join-Path $ArCoreDir "core-$ArCoreVersion.aar"
+$ArCoreExpanded = Join-Path $ArCoreDir "expanded"
+$ArCoreClasses = Join-Path $ArCoreExpanded "classes.jar"
+if (-not (Test-Path $ArCoreAar)) {
+    New-Item -ItemType Directory -Force -Path $ArCoreDir | Out-Null
+    $ArCoreUrl = "https://dl.google.com/dl/android/maven2/com/google/ar/core/$ArCoreVersion/core-$ArCoreVersion.aar"
+    Invoke-WebRequest -UseBasicParsing -Uri $ArCoreUrl -OutFile $ArCoreAar
+}
+if (-not (Test-Path $ArCoreClasses)) {
+    if (Test-Path $ArCoreExpanded) {
+        Remove-Item -LiteralPath $ArCoreExpanded -Recurse -Force
+    }
+    New-Item -ItemType Directory -Force -Path $ArCoreExpanded | Out-Null
+    Push-Location $ArCoreExpanded
+    try {
+        & jar xf $ArCoreAar
+    } finally {
+        Pop-Location
+    }
+}
+
 foreach ($Tool in @($AndroidJar, $Aapt2, $D8, $ZipAlign, $ApkSigner)) {
     if (-not (Test-Path $Tool)) {
         throw "Missing required Android build tool: $Tool"
@@ -88,16 +111,27 @@ $JavaSources += Get-ChildItem -Path (Join-Path $Root "app\src\main\java") -Recur
 $JavaSources += Get-ChildItem -Path $GeneratedDir -Recurse -Filter *.java | ForEach-Object { $_.FullName }
 $JavaSources | Set-Content -Path $SourceList -Encoding ASCII
 
-& javac -encoding UTF-8 -source 17 -target 17 -classpath $AndroidJar -d $ClassesDir "@$SourceList"
+$JavacClasspath = "$AndroidJar;$ArCoreClasses"
+& javac -encoding UTF-8 -source 17 -target 17 -classpath $JavacClasspath -d $ClassesDir "@$SourceList"
 if ($LASTEXITCODE -ne 0) { throw "javac failed" }
 & jar cf $ClassesJar -C $ClassesDir .
 if ($LASTEXITCODE -ne 0) { throw "jar failed" }
-& $D8 --lib $AndroidJar --min-api 26 --output $DexDir $ClassesJar
+& $D8 --lib $AndroidJar --min-api 26 --output $DexDir $ClassesJar $ArCoreClasses
 if ($LASTEXITCODE -ne 0) { throw "d8 failed" }
 
 Copy-Item -LiteralPath $UnsignedApk -Destination $DexedApk -Force
 & jar uf $DexedApk -C $DexDir classes.dex
 if ($LASTEXITCODE -ne 0) { throw "adding classes.dex failed" }
+$NativeLibRoot = Join-Path $IntermediateDir "native-libs"
+New-Item -ItemType Directory -Force -Path (Join-Path $NativeLibRoot "lib") | Out-Null
+Get-ChildItem -Path (Join-Path $ArCoreExpanded "jni") -Directory | ForEach-Object {
+    $AbiTarget = Join-Path (Join-Path $NativeLibRoot "lib") $_.Name
+    New-Item -ItemType Directory -Force -Path $AbiTarget | Out-Null
+    Copy-Item -LiteralPath (Join-Path $_.FullName "libarcore_sdk_c.so") -Destination $AbiTarget -Force
+    Copy-Item -LiteralPath (Join-Path $_.FullName "libarcore_sdk_jni.so") -Destination $AbiTarget -Force
+}
+& jar uf $DexedApk -C $NativeLibRoot lib
+if ($LASTEXITCODE -ne 0) { throw "adding native libraries failed" }
 & $ZipAlign -p -f 4 $DexedApk $AlignedApk
 if ($LASTEXITCODE -ne 0) { throw "zipalign failed" }
 

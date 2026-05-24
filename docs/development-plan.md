@@ -6,7 +6,8 @@ Build an installable Android app that lets you look at a lawn through the phone 
 
 ## Core Behavior
 
-- Live back-camera preview.
+- ARCore ground-lock camera mode for 3D lawn-anchored drawing.
+- Camera2/GPS/heading mode retained as a fallback.
 - Shape tools:
   - Point labels for quick notes.
   - Rectangles for beds/plots.
@@ -33,9 +34,11 @@ Each annotation stores:
   - Bearing from the device heading.
   - Elevation from the device pitch.
 
-When the camera is active later, the app compares current GPS location with the annotation origin. If the phone is close enough, each angular anchor is projected back onto the screen using current heading, pitch, camera field of view, and zoom.
+The launcher AR mode uses ARCore plane tracking for the active session. Each drawn screen point is raycast onto a detected horizontal ground plane and stored relative to an ARCore anchor, so the overlay follows real camera translation and parallax while the app is open.
 
-This is a practical first version of lawn-scale AR persistence without needing a cloud AR service.
+The fallback 2D mode compares current GPS location with the annotation origin. If the phone is close enough, each angular anchor is projected back onto the screen using current heading, camera field of view, zoom, and the stored vertical screen ratio.
+
+This gives practical in-session ground locking now, while later-session precision still needs a cloud/geospatial relocalization service.
 
 ## Accuracy Notes
 
