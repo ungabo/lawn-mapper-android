@@ -1,0 +1,6 @@
+build/
+signing/
+*.idsig
+
+!apk/
+!apk/*.apk
