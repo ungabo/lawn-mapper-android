@@ -2,7 +2,7 @@
 
 ## Goal
 
-Build an installable Android app that lets you look at a lawn through the phone camera, draw labeled areas on top of the live view, and see those labeled areas again when you return to roughly the same GPS location and point the phone in the same direction.
+Build an installable Android app that lets you look at a lawn through the phone camera, draw labeled areas on top of the live view, and see those labeled areas again when you return to roughly the same GPS location.
 
 ## Core Behavior
 
@@ -15,11 +15,12 @@ Build an installable Android app that lets you look at a lawn through the phone 
 - Label entry with typed text after creating a shape.
 - Edit mode to reopen/change labels or delete an annotation.
 - Erase mode with a circular brush that removes whole annotations it touches.
-- Pinch zoom that controls the camera crop and updates annotation projection.
 - Snapshot button that saves the current AR camera view with labels/shapes into the phone gallery.
 - Snapshot gallery for viewing and sharing saved images.
 - Help menu explaining every tool.
 - Project save/load/delete/rename.
+- New project action with a default human-readable date/time name.
+- Autosave after drawing, editing, erasing, clearing, and project metadata actions.
 - Local persistence in app-private JSON so annotations survive app restarts.
 
 ## Persistence Model
@@ -30,15 +31,12 @@ Each annotation stores:
 - Label.
 - Creation time.
 - Color.
-- GPS origin latitude/longitude/altitude/accuracy when created.
-- Device pose when created.
-- One or more angular anchors:
-  - Bearing from the device heading.
-  - Elevation from the device pitch.
+- GPS origin latitude/longitude/altitude/accuracy for the project.
+- Compass-aligned east/north/up meter offsets from that project origin.
 
 The launcher AR mode uses ARCore plane tracking for the active session. Each drawn screen point is raycast onto a detected horizontal ground plane and stored relative to an ARCore anchor, so the overlay follows real camera translation and parallax while the app is open.
 
-This gives practical in-session ground locking now, while later-session precision still needs a cloud/geospatial relocalization service.
+This gives practical in-session ground locking now. Later-session reloads use GPS, compass heading, and the current AR ground plane; tighter precision still needs a cloud/geospatial relocalization service.
 
 ## Project Save/Load
 
@@ -47,21 +45,22 @@ Saved projects live in app-private JSON files under the app data directory. New 
 Each project stores:
 
 - Project id, name, created time, updated time.
+- GPS origin latitude/longitude/altitude/accuracy.
 - Shape type, label, color.
-- Shape points and label point relative to a saved project origin.
+- Shape points and label point as east/north/up meter offsets from the saved GPS origin.
 
-Loading is a deliberate placement flow: the user selects a project, then taps the currently detected lawn/ground plane. The app creates fresh ARCore anchors in the current session and restores the saved shapes relative to that tap.
+Loading is automatic: the user selects a project, then the app waits for GPS, compass, AR tracking, and a detected horizontal ground plane. It compares the current phone location to the saved GPS origin, aligns saved east/north offsets to the current compass heading, and creates fresh ARCore anchors in the current session.
 
 ## Accuracy Notes
 
-Phone GPS is often accurate to 3-15 meters outdoors, sometimes worse near houses, trees, or fences. A typical yard is smaller than the error range, so this app uses GPS to decide which saved annotations belong nearby, then uses compass/rotation sensors and camera field of view to place them back on screen.
+Phone GPS is often accurate to 3-15 meters outdoors, sometimes worse near houses, trees, or fences. A typical yard is smaller than the error range, so this app uses GPS plus compass heading to approximate the saved lawn location, then ARCore locks the restored shapes onto the currently detected ground plane.
 
 This means:
 
-- It should work best when you stand near the same spot and face the same lawn area.
+- It should work best when you stand near the same spot with a good GPS fix.
 - It will not be centimeter-accurate.
 - It may drift when the compass is disturbed by metal, vehicles, buildings, or magnetic cases.
-- For survey-grade placement, a future version should use ARCore world tracking, a visual relocalization flow, or ARCore Geospatial if the target device and Google Cloud setup are available.
+- For tighter return placement, a future version should use ARCore Geospatial/VPS if the target device and Google Cloud setup are available.
 
 ## Permissions
 
@@ -80,9 +79,9 @@ Storage:
 The app is intentionally dependency-light:
 
 - Java Activity using platform Android APIs.
-- Camera2 for preview and digital zoom.
+- ARCore `Session` with a `GLSurfaceView` background renderer.
 - LocationManager for GPS/network location.
-- Rotation-vector sensor for heading/pitch/roll.
+- Rotation-vector sensor for heading.
 - Custom View for shape rendering and touch handling.
 - `org.json` for local annotation storage.
 - MediaStore for PNG snapshots.
@@ -90,11 +89,10 @@ The app is intentionally dependency-light:
 ## Files
 
 - `app/src/main/AndroidManifest.xml`: app metadata and permissions.
-- `app/src/main/java/com/gabecodex/lawnmapper/MainActivity.java`: lifecycle, UI, permissions, location, sensors, snapshots.
-- `CameraController.java`: Camera2 preview and zoom.
-- `AnnotationOverlayView.java`: drawing tools, labels, projection, erase/edit hit testing.
-- `LawnAnnotation.java`, `AnchorPoint.java`, `DevicePose.java`: annotation and pose model.
-- `AnnotationStore.java`: JSON persistence.
+- `app/src/main/java/com/gabecodex/lawnmapper/ArLawnActivity.java`: lifecycle, UI, permissions, location, sensors, snapshots, project actions.
+- `ArLawnRenderer.java`: ARCore session rendering, plane raycasts, anchors, project save/load transforms.
+- `ArOverlayView.java`: drawing tools, labels, projection, erase/edit hit testing.
+- `SavedProject.java`, `SavedProjectStore.java`: app-private project JSON persistence.
 - `scripts/build.ps1`: dependency-free Android SDK build, sign, and optional install.
 
 ## Test Plan
@@ -107,10 +105,10 @@ The app is intentionally dependency-light:
 6. Wait for GPS accuracy to appear in the status strip.
 7. Draw a point, box, circle, and freehand shape.
 8. Enter labels for each.
-9. Pinch zoom and confirm the camera zoom changes.
+9. Use erase/edit and confirm the active project autosaves after the change.
 10. Tap Snap and confirm an image appears under `Pictures/LawnMapper`.
-11. Close and reopen the app; annotations should reload.
-12. Return near the same position and point in the same direction; annotations should reappear.
+11. Use `Menu > Load project`; annotations should appear without requiring a placement tap once GPS/compass/AR ground tracking are ready.
+12. Return near the same position; annotations should restore near the saved lawn location, subject to GPS/compass accuracy.
 
 ## Future Enhancements
 

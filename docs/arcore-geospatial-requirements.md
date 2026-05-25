@@ -4,11 +4,15 @@
 
 The app includes a local ARCore ground-lock mode. It uses ARCore anchors on detected horizontal planes, so shapes stay locked to the lawn while the AR session is running.
 
-The app can save/load named projects now, but loading requires the user to tap the lawn to place the saved project into the current AR session. The fully persistent version that relocalizes lawn labels automatically on a later visit still needs ARCore Geospatial/VPS authorization through Google Cloud. I did not build that part yet because the app needs a real Google Cloud ARCore API credential that should be owned by the repo/account owner.
+The app can save/load named projects now. Projects store a GPS origin plus compass-aligned ground-plane offsets, and loading recreates the saved anchors automatically once GPS, compass, AR tracking, and a horizontal ground plane are ready.
+
+This is a practical prototype, not true visual/geospatial relocalization. The fully persistent version that relocalizes lawn labels more tightly on a later visit still needs ARCore Geospatial/VPS authorization through Google Cloud. I did not build that part yet because the app needs a real Google Cloud ARCore API credential that should be owned by the repo/account owner.
 
 ## Why Plain ARCore Is Not Enough
 
 Plain ARCore local anchors are good for keeping content stable while one AR session is running. They are not enough for the main goal of returning later and seeing the same lawn labels after the app restarts.
+
+The current app bridges that gap with phone GPS and compass heading. That can be useful in a yard, but it inherits raw GPS and magnetometer error, so shapes can still be offset after walking away or reopening later.
 
 For that, the app should use ARCore Geospatial anchors:
 
@@ -58,16 +62,14 @@ Official setup references:
 - ARCore SDK repository/releases: https://github.com/google-ar/arcore-android-sdk
 - ARCore Maven metadata: https://dl.google.com/dl/android/maven2/com/google/ar/core/maven-metadata.xml
 
-## App Changes Needed
+## App Changes Needed For True Geospatial
 
-The current app uses Camera2 directly. ARCore owns the camera during an AR session, so the ARCore version should replace the preview stack with:
+The current launcher already uses ARCore for the camera/session. The true Geospatial version should extend that ARCore stack with:
 
-- `GLSurfaceView` or another OpenGL renderer.
 - ARCore `Session`.
-- ARCore camera background renderer.
 - Geospatial mode enabled in `Config`.
 - Per-frame `Frame` and `Camera` pose updates.
-- A renderer for annotation geometry and label billboards.
+- Earth/geospatial pose and accuracy checks before showing restored project anchors.
 
 The annotation model can mostly stay, but it should gain:
 
@@ -78,20 +80,12 @@ The annotation model can mostly stay, but it should gain:
 
 ## Suggested Implementation Plan
 
-1. Add a Gradle Android build alongside the current manual SDK build.
-2. Add dependency on the current ARCore Android SDK, currently `com.google.ar:core:1.54.0` as of the April 2026 ARCore SDK release.
-3. Mark ARCore as optional in the manifest so the existing non-AR mode still works.
-4. Add `INTERNET` permission for Geospatial/VPS.
-5. Add an AR mode switch:
-
-```text
-Standard mode: current Camera2 GPS/heading overlay
-AR mode: ARCore Geospatial overlay when authorized and localized
-```
-
-6. Store geospatial anchors for points/shapes and rehydrate them on launch.
-7. Render saved shapes only after localization reaches acceptable horizontal and heading accuracy.
-8. Keep the current snapshot pipeline or implement an AR framebuffer capture path.
+1. Add the Google Cloud ARCore API credential to the app using the repo owner's project.
+2. Enable geospatial mode in the existing ARCore `Config`.
+3. Wait for `Earth` tracking and acceptable horizontal/heading accuracy before saving or restoring geospatial anchors.
+4. Store geospatial anchor fields alongside the current GPS-origin project data.
+5. Resolve saved geospatial anchors on load, then render shapes only after anchor tracking is stable.
+6. Keep the current GPS/compass project loader as a fallback when Geospatial/VPS is unavailable.
 
 ## Practical Accuracy Expectation
 

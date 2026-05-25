@@ -12,6 +12,11 @@ final class SavedProject {
     String name;
     long createdAtMillis = System.currentTimeMillis();
     long updatedAtMillis = createdAtMillis;
+    boolean hasOriginLocation;
+    double originLatitude;
+    double originLongitude;
+    double originAltitude;
+    float originAccuracyMeters;
     final ArrayList<SavedProjectAnnotation> annotations = new ArrayList<>();
 
     JSONObject toJson() throws JSONException {
@@ -20,6 +25,11 @@ final class SavedProject {
         json.put("name", name);
         json.put("createdAtMillis", createdAtMillis);
         json.put("updatedAtMillis", updatedAtMillis);
+        json.put("hasOriginLocation", hasOriginLocation);
+        json.put("originLatitude", originLatitude);
+        json.put("originLongitude", originLongitude);
+        json.put("originAltitude", originAltitude);
+        json.put("originAccuracyMeters", originAccuracyMeters);
         JSONArray array = new JSONArray();
         for (SavedProjectAnnotation annotation : annotations) {
             array.put(annotation.toJson());
@@ -34,6 +44,11 @@ final class SavedProject {
         project.name = json.optString("name", "Untitled Project");
         project.createdAtMillis = json.optLong("createdAtMillis", System.currentTimeMillis());
         project.updatedAtMillis = json.optLong("updatedAtMillis", project.createdAtMillis);
+        project.hasOriginLocation = json.optBoolean("hasOriginLocation", false);
+        project.originLatitude = json.optDouble("originLatitude", 0d);
+        project.originLongitude = json.optDouble("originLongitude", 0d);
+        project.originAltitude = json.optDouble("originAltitude", 0d);
+        project.originAccuracyMeters = (float) json.optDouble("originAccuracyMeters", 0d);
         JSONArray array = json.optJSONArray("annotations");
         if (array != null) {
             for (int i = 0; i < array.length(); i++) {

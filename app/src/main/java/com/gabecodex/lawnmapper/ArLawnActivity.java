@@ -9,6 +9,13 @@ import android.graphics.Bitmap;
 import android.graphics.Canvas;
 import android.graphics.Color;
 import android.graphics.PointF;
+import android.hardware.Sensor;
+import android.hardware.SensorEvent;
+import android.hardware.SensorEventListener;
+import android.hardware.SensorManager;
+import android.location.Location;
+import android.location.LocationListener;
+import android.location.LocationManager;
 import android.opengl.GLSurfaceView;
 import android.os.Bundle;
 import android.os.Handler;
@@ -34,7 +41,7 @@ import com.google.ar.core.exceptions.CameraNotAvailableException;
 import java.util.ArrayList;
 import java.util.List;
 
-public final class ArLawnActivity extends Activity implements ArOverlayView.Callback {
+public final class ArLawnActivity extends Activity implements ArOverlayView.Callback, SensorEventListener, LocationListener {
     private static final int REQUEST_CAMERA = 77;
 
     private GLSurfaceView glSurfaceView;
@@ -42,10 +49,17 @@ public final class ArLawnActivity extends Activity implements ArOverlayView.Call
     private ArLawnRenderer renderer;
     private SavedProjectStore projectStore;
     private SavedProject currentProject;
-    private SavedProject pendingProject;
+    private SensorManager sensorManager;
+    private Sensor rotationVectorSensor;
+    private LocationManager locationManager;
+    private Location currentLocation;
+    private float currentAzimuthDegrees;
+    private boolean hasPose;
     private Session session;
     private boolean installRequested;
     private boolean sessionResumed;
+    private boolean projectDirty;
+    private boolean autosaveScheduled;
     private TextView statusText;
     private final ArrayList<Button> modeButtons = new ArrayList<>();
     private final Handler handler = new Handler();
@@ -53,7 +67,17 @@ public final class ArLawnActivity extends Activity implements ArOverlayView.Call
         @Override
         public void run() {
             updateStatus();
+            if (projectDirty && currentLocation != null && hasPose) {
+                autoSaveProjectSoon();
+            }
             handler.postDelayed(this, 500L);
+        }
+    };
+    private final Runnable autosaveRunnable = new Runnable() {
+        @Override
+        public void run() {
+            autosaveScheduled = false;
+            autoSaveProjectQuiet();
         }
     };
 
@@ -63,17 +87,21 @@ public final class ArLawnActivity extends Activity implements ArOverlayView.Call
         requestWindowFeature(Window.FEATURE_NO_TITLE);
         getWindow().addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON);
         projectStore = new SavedProjectStore(this);
+        sensorManager = (SensorManager) getSystemService(SENSOR_SERVICE);
+        rotationVectorSensor = sensorManager == null ? null : sensorManager.getDefaultSensor(Sensor.TYPE_ROTATION_VECTOR);
+        locationManager = (LocationManager) getSystemService(LOCATION_SERVICE);
         setupUi();
-        if (checkSelfPermission(Manifest.permission.CAMERA) != PackageManager.PERMISSION_GRANTED) {
-            requestPermissions(new String[]{Manifest.permission.CAMERA}, REQUEST_CAMERA);
+        if (!hasRequiredPermissions()) {
+            requestPermissions(requiredPermissions(), REQUEST_CAMERA);
         }
     }
 
     @Override
     protected void onResume() {
         super.onResume();
-        if (checkSelfPermission(Manifest.permission.CAMERA) == PackageManager.PERMISSION_GRANTED) {
+        if (hasRequiredPermissions()) {
             resumeArSession();
+            startLocationAndSensors();
         }
         glSurfaceView.onResume();
         handler.post(statusTicker);
@@ -83,11 +111,14 @@ public final class ArLawnActivity extends Activity implements ArOverlayView.Call
     protected void onPause() {
         super.onPause();
         handler.removeCallbacks(statusTicker);
+        handler.removeCallbacks(autosaveRunnable);
+        autosaveScheduled = false;
         glSurfaceView.onPause();
         if (session != null && sessionResumed) {
             session.pause();
             sessionResumed = false;
         }
+        stopLocationAndSensors();
     }
 
     @Override
@@ -102,12 +133,11 @@ public final class ArLawnActivity extends Activity implements ArOverlayView.Call
     @Override
     public void onRequestPermissionsResult(int requestCode, String[] permissions, int[] grantResults) {
         super.onRequestPermissionsResult(requestCode, permissions, grantResults);
-        if (requestCode == REQUEST_CAMERA
-                && grantResults.length > 0
-                && grantResults[0] == PackageManager.PERMISSION_GRANTED) {
+        if (requestCode == REQUEST_CAMERA && hasRequiredPermissions()) {
             resumeArSession();
+            startLocationAndSensors();
         } else {
-            toast("Camera permission is needed for AR ground locking");
+            toast("Camera and location permissions are needed");
         }
     }
 
@@ -217,6 +247,8 @@ public final class ArLawnActivity extends Activity implements ArOverlayView.Call
         glSurfaceView.queueEvent(() -> renderer.createAnnotationOnGlThread(type, screenPoints, new ArLawnRenderer.CreateCallback() {
             @Override
             public void onCreated(ArAnnotation annotation) {
+                ensureCurrentProject();
+                markProjectDirtyAndAutoSave();
                 promptLabel(annotation);
             }
 
@@ -235,33 +267,7 @@ public final class ArLawnActivity extends Activity implements ArOverlayView.Call
     @Override
     public void requestEraseAnnotation(ArAnnotation annotation) {
         glSurfaceView.queueEvent(() -> renderer.removeAnnotation(annotation));
-    }
-
-    @Override
-    public boolean isProjectPlacementActive() {
-        return pendingProject != null;
-    }
-
-    @Override
-    public void requestPlaceProject(PointF screenPoint) {
-        final SavedProject project = pendingProject;
-        if (project == null) {
-            return;
-        }
-        glSurfaceView.queueEvent(() -> renderer.placeProjectOnGlThread(project, screenPoint, new ArLawnRenderer.ProjectLoadCallback() {
-            @Override
-            public void onLoaded(int annotationCount) {
-                currentProject = project;
-                pendingProject = null;
-                toast("Loaded " + project.name);
-                updateStatus();
-            }
-
-            @Override
-            public void onFailed(String message) {
-                toast(message);
-            }
-        }));
+        markProjectDirtyAndAutoSave();
     }
 
     private void promptLabel(final ArAnnotation annotation) {
@@ -278,8 +284,15 @@ public final class ArLawnActivity extends Activity implements ArOverlayView.Call
         new AlertDialog.Builder(this)
                 .setTitle("Label")
                 .setView(input)
-                .setPositiveButton("Save", (dialog, which) -> annotation.label = input.getText().toString().trim())
-                .setNeutralButton("Delete", (dialog, which) -> glSurfaceView.queueEvent(() -> renderer.removeAnnotation(annotation)))
+                .setPositiveButton("Save", (dialog, which) -> {
+                    annotation.label = input.getText().toString().trim();
+                    ensureCurrentProject();
+                    markProjectDirtyAndAutoSave();
+                })
+                .setNeutralButton("Delete", (dialog, which) -> {
+                    glSurfaceView.queueEvent(() -> renderer.removeAnnotation(annotation));
+                    markProjectDirtyAndAutoSave();
+                })
                 .setNegativeButton("Cancel", null)
                 .show();
     }
@@ -289,9 +302,13 @@ public final class ArLawnActivity extends Activity implements ArOverlayView.Call
                 .setTitle("Clear AR annotations?")
                 .setMessage("This removes the AR anchors in this session.")
                 .setPositiveButton("Clear", (dialog, which) -> {
-                    currentProject = null;
-                    pendingProject = null;
                     glSurfaceView.queueEvent(() -> renderer.clearAnnotations());
+                    if (currentProject != null) {
+                        currentProject.annotations.clear();
+                        currentProject.hasOriginLocation = false;
+                        projectDirty = false;
+                        projectStore.save(currentProject);
+                    }
                     updateStatus();
                 })
                 .setNegativeButton("Cancel", null)
@@ -308,6 +325,7 @@ public final class ArLawnActivity extends Activity implements ArOverlayView.Call
 
     private void showMenu() {
         String[] items = new String[]{
+                "New project",
                 "Save project",
                 "Load project",
                 "Rename project",
@@ -320,32 +338,71 @@ public final class ArLawnActivity extends Activity implements ArOverlayView.Call
                 .setTitle("Menu")
                 .setItems(items, (dialog, which) -> {
                     if (which == 0) {
-                        saveProject();
+                        confirmNewProject();
                     } else if (which == 1) {
-                        chooseProjectToLoad();
+                        saveProject();
                     } else if (which == 2) {
-                        chooseProjectToRename();
+                        chooseProjectToLoad();
                     } else if (which == 3) {
-                        chooseProjectToDelete();
+                        chooseProjectToRename();
                     } else if (which == 4) {
-                        startActivity(new Intent(this, SnapshotGalleryActivity.class));
+                        chooseProjectToDelete();
                     } else if (which == 5) {
-                        showHelp();
+                        startActivity(new Intent(this, SnapshotGalleryActivity.class));
                     } else if (which == 6) {
+                        showHelp();
+                    } else if (which == 7) {
                         confirmClear();
                     }
                 })
                 .show();
     }
 
+    private void confirmNewProject() {
+        if (renderer.getAnnotationCount() == 0) {
+            newProject();
+            return;
+        }
+        new AlertDialog.Builder(this)
+                .setTitle("Start new project?")
+                .setMessage("This clears the current on-screen anchors. Saved projects stay in the project list.")
+                .setPositiveButton("New", (dialog, which) -> newProject())
+                .setNegativeButton("Cancel", null)
+                .show();
+    }
+
+    private void newProject() {
+        currentProject = new SavedProject();
+        currentProject.name = projectStore.defaultProjectName();
+        projectStore.save(currentProject);
+        projectDirty = false;
+        glSurfaceView.queueEvent(() -> renderer.clearAnnotations());
+        toast("New project: " + currentProject.name);
+        updateStatus();
+    }
+
     private void saveProject() {
-        final SavedProject baseProject = currentProject;
+        final SavedProject baseProject = ensureCurrentProject();
         final String projectName = baseProject == null ? projectStore.defaultProjectName() : baseProject.name;
-        glSurfaceView.queueEvent(() -> renderer.buildProjectOnGlThread(projectName, baseProject, new ArLawnRenderer.ProjectBuildCallback() {
+        if (renderer.getAnnotationCount() == 0 && baseProject != null) {
+            projectStore.save(baseProject);
+            toast("Saved " + baseProject.name);
+            return;
+        }
+        if (currentLocation == null) {
+            toast("Waiting for GPS before saving");
+            return;
+        }
+        if (!hasPose) {
+            toast("Waiting for compass before saving");
+            return;
+        }
+        glSurfaceView.queueEvent(() -> renderer.buildProjectOnGlThread(projectName, baseProject, currentLocation, currentAzimuthDegrees, new ArLawnRenderer.ProjectBuildCallback() {
             @Override
             public void onBuilt(SavedProject project) {
                 if (projectStore.save(project)) {
                     currentProject = project;
+                    projectDirty = false;
                     toast("Saved " + project.name);
                     updateStatus();
                 } else {
@@ -375,11 +432,34 @@ public final class ArLawnActivity extends Activity implements ArOverlayView.Call
                         toast("Could not load project");
                         return;
                     }
-                    pendingProject = loaded;
-                    toast("Tap the lawn to place " + loaded.name);
-                    updateStatus();
+                    loadProjectUsingGps(loaded);
                 })
                 .show();
+    }
+
+    private void loadProjectUsingGps(final SavedProject project) {
+        if (currentLocation == null) {
+            toast("Waiting for GPS before loading");
+            return;
+        }
+        if (!hasPose) {
+            toast("Waiting for compass before loading");
+            return;
+        }
+        glSurfaceView.queueEvent(() -> renderer.placeProjectUsingGpsOnGlThread(project, currentLocation, currentAzimuthDegrees, new ArLawnRenderer.ProjectLoadCallback() {
+            @Override
+            public void onLoaded(int annotationCount) {
+                currentProject = project;
+                projectDirty = false;
+                toast("Loaded " + project.name);
+                updateStatus();
+            }
+
+            @Override
+            public void onFailed(String message) {
+                toast(message);
+            }
+        }));
     }
 
     private void chooseProjectToRename() {
@@ -442,9 +522,7 @@ public final class ArLawnActivity extends Activity implements ArOverlayView.Call
                     if (projectStore.delete(project.id)) {
                         if (currentProject != null && currentProject.id.equals(project.id)) {
                             currentProject = null;
-                        }
-                        if (pendingProject != null && pendingProject.id.equals(project.id)) {
-                            pendingProject = null;
+                            projectDirty = false;
                         }
                         toast("Deleted project");
                         updateStatus();
@@ -468,12 +546,13 @@ public final class ArLawnActivity extends Activity implements ArOverlayView.Call
                                 + "Free: Draw an irregular outline on the visible lawn.\n\n"
                                 + "Erase: Tap or drag through a shape to delete it.\n\n"
                                 + "Edit: Tap a shape or label to rename or delete it.\n\n"
-                                + "Save project: Saves the current shapes and labels. New projects are named by date and time.\n\n"
-                                + "Load project: Pick a saved project, then tap the lawn to place it on the current AR ground plane.\n\n"
+                                + "New project: Starts a blank project named by date and time.\n\n"
+                                + "Save project: Saves the current shapes and labels. Projects also autosave after edits.\n\n"
+                                + "Load project: Pick a saved project. It loads by GPS position when AR tracking, GPS, and compass are ready.\n\n"
                                 + "Rename project: Changes a saved project's name.\n\n"
                                 + "Delete project: Removes a saved project file.\n\n"
                                 + "View snapshots: Opens saved photos so you can preview or share them.\n\n"
-                                + "Shapes lock to the lawn while this AR session is running. Saved projects can be loaded later, but you place them again by tapping the lawn unless the future Geospatial/VPS setup is added."
+                                + "GPS loading uses phone GPS accuracy. For tighter automatic return-to-yard placement, the future Geospatial/VPS setup is still needed."
                 )
                 .setPositiveButton("OK", null)
                 .show();
@@ -573,13 +652,59 @@ public final class ArLawnActivity extends Activity implements ArOverlayView.Call
         if (statusText == null || renderer == null) {
             return;
         }
-        if (pendingProject != null) {
-            statusText.setText("PLACE PROJECT | Tap lawn for " + pendingProject.name);
+        String project = currentProject == null ? "Unsaved" : currentProject.name;
+        String gps = currentLocation == null ? "GPS waiting" : "GPS " + Math.round(currentLocation.hasAccuracy() ? currentLocation.getAccuracy() : 0f) + "m";
+        String compass = hasPose ? "Compass ready" : "Compass waiting";
+        statusText.setText("AR " + overlayView.getMode().name() + " | " + project + " | " + gps + " | " + compass
+                + " | " + renderer.getAnnotationCount() + " anchored");
+    }
+
+    private SavedProject ensureCurrentProject() {
+        if (currentProject == null) {
+            currentProject = new SavedProject();
+            currentProject.name = projectStore.defaultProjectName();
+            projectStore.save(currentProject);
+            updateStatus();
+        }
+        return currentProject;
+    }
+
+    private void autoSaveProjectSoon() {
+        if (!projectDirty || autosaveScheduled) {
             return;
         }
-        String project = currentProject == null ? "Unsaved" : currentProject.name;
-        statusText.setText("AR " + overlayView.getMode().name() + " | " + project + " | "
-                + renderer.getAnnotationCount() + " anchored");
+        autosaveScheduled = true;
+        handler.postDelayed(autosaveRunnable, 350L);
+    }
+
+    private void autoSaveProjectQuiet() {
+        final SavedProject baseProject = ensureCurrentProject();
+        if (renderer.getAnnotationCount() == 0) {
+            baseProject.annotations.clear();
+            baseProject.hasOriginLocation = false;
+            projectStore.save(baseProject);
+            projectDirty = false;
+            updateStatus();
+            return;
+        }
+        if (currentLocation == null || !hasPose) {
+            updateStatus();
+            return;
+        }
+        glSurfaceView.queueEvent(() -> renderer.buildProjectOnGlThread(baseProject.name, baseProject, currentLocation, currentAzimuthDegrees, new ArLawnRenderer.ProjectBuildCallback() {
+            @Override
+            public void onBuilt(SavedProject project) {
+                if (projectStore.save(project)) {
+                    currentProject = project;
+                    projectDirty = false;
+                    updateStatus();
+                }
+            }
+
+            @Override
+            public void onFailed(String message) {
+            }
+        }));
     }
 
     private String[] projectNames(ArrayList<SavedProject> projects) {
@@ -591,8 +716,103 @@ public final class ArLawnActivity extends Activity implements ArOverlayView.Call
         return names;
     }
 
+    private void markProjectDirtyAndAutoSave() {
+        projectDirty = true;
+        autoSaveProjectSoon();
+    }
+
     private void toast(String message) {
         Toast.makeText(this, message, Toast.LENGTH_SHORT).show();
+    }
+
+    private boolean hasRequiredPermissions() {
+        for (String permission : requiredPermissions()) {
+            if (checkSelfPermission(permission) != PackageManager.PERMISSION_GRANTED) {
+                return false;
+            }
+        }
+        return true;
+    }
+
+    private String[] requiredPermissions() {
+        return new String[]{
+                Manifest.permission.CAMERA,
+                Manifest.permission.ACCESS_FINE_LOCATION,
+                Manifest.permission.ACCESS_COARSE_LOCATION
+        };
+    }
+
+    private void startLocationAndSensors() {
+        if (sensorManager != null && rotationVectorSensor != null) {
+            sensorManager.registerListener(this, rotationVectorSensor, SensorManager.SENSOR_DELAY_UI);
+        }
+        if (locationManager == null || !hasRequiredPermissions()) {
+            return;
+        }
+        try {
+            setCurrentLocationIfBetter(locationManager.getLastKnownLocation(LocationManager.GPS_PROVIDER));
+            setCurrentLocationIfBetter(locationManager.getLastKnownLocation(LocationManager.NETWORK_PROVIDER));
+            locationManager.requestLocationUpdates(LocationManager.GPS_PROVIDER, 1000L, 0f, this);
+            locationManager.requestLocationUpdates(LocationManager.NETWORK_PROVIDER, 1500L, 0f, this);
+        } catch (SecurityException ignored) {
+        }
+    }
+
+    private void stopLocationAndSensors() {
+        if (sensorManager != null) {
+            sensorManager.unregisterListener(this);
+        }
+        if (locationManager != null) {
+            try {
+                locationManager.removeUpdates(this);
+            } catch (SecurityException ignored) {
+            }
+        }
+    }
+
+    @Override
+    public void onLocationChanged(Location location) {
+        setCurrentLocationIfBetter(location);
+        updateStatus();
+        if (projectDirty && hasPose) {
+            autoSaveProjectSoon();
+        }
+    }
+
+    private void setCurrentLocationIfBetter(Location candidate) {
+        if (candidate == null) {
+            return;
+        }
+        if (currentLocation == null) {
+            currentLocation = candidate;
+            return;
+        }
+        boolean newer = candidate.getTime() > currentLocation.getTime() + 5000L;
+        boolean moreAccurate = candidate.hasAccuracy() && currentLocation.hasAccuracy()
+                && candidate.getAccuracy() < currentLocation.getAccuracy();
+        if (newer || moreAccurate) {
+            currentLocation = candidate;
+        }
+    }
+
+    @Override
+    public void onSensorChanged(SensorEvent event) {
+        if (event.sensor.getType() != Sensor.TYPE_ROTATION_VECTOR) {
+            return;
+        }
+        float[] rotationMatrix = new float[9];
+        float[] orientation = new float[3];
+        SensorManager.getRotationMatrixFromVector(rotationMatrix, event.values);
+        SensorManager.getOrientation(rotationMatrix, orientation);
+        currentAzimuthDegrees = GeoMath.normalizeCompass((float) Math.toDegrees(orientation[0]));
+        hasPose = true;
+        if (projectDirty && currentLocation != null) {
+            autoSaveProjectSoon();
+        }
+    }
+
+    @Override
+    public void onAccuracyChanged(Sensor sensor, int accuracy) {
     }
 
     private int dp(int value) {

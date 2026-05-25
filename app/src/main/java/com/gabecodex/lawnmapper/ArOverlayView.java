@@ -22,10 +22,6 @@ public final class ArOverlayView extends View {
         void requestEditAnnotation(ArAnnotation annotation);
 
         void requestEraseAnnotation(ArAnnotation annotation);
-
-        boolean isProjectPlacementActive();
-
-        void requestPlaceProject(PointF screenPoint);
     }
 
     private final ArrayList<ArProjectedAnnotation> projected = new ArrayList<>();
@@ -106,12 +102,6 @@ public final class ArOverlayView extends View {
         }
         float x = event.getX();
         float y = event.getY();
-        if (callback.isProjectPlacementActive()) {
-            if (event.getActionMasked() == MotionEvent.ACTION_UP) {
-                callback.requestPlaceProject(new PointF(x, y));
-            }
-            return true;
-        }
         switch (mode) {
             case ERASE:
                 handleErase(event, x, y);

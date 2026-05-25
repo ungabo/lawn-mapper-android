@@ -41,7 +41,7 @@ In AR mode:
 3. The app raycasts the drawn points onto the detected horizontal plane.
 4. The shape is stored as local 3D coordinates attached to an ARCore anchor.
 
-This locks shapes while the AR session is running. Reopening the app later and restoring exact lawn positions still requires ARCore Geospatial/VPS setup; see `docs/arcore-geospatial-requirements.md`.
+This locks shapes while the AR session is running. Saved projects also store a GPS origin and compass-aligned ground-plane offsets so they can reload automatically near the same lawn area. Raw phone GPS/compass is still not survey-grade; tighter repeat placement requires ARCore Geospatial/VPS setup; see `docs/arcore-geospatial-requirements.md`.
 
 ## Controls
 
@@ -53,13 +53,21 @@ This locks shapes while the AR session is running. Reopening the app later and r
 - `Erase`: tap or drag through a shape to remove it.
 - `Edit`: tap a shape or label to rename or delete it.
 - `Menu`: view/share snapshots, open Help, or clear anchors.
-- `Menu > Save project`: save current AR shapes/labels. New projects default to a human-readable date/time name.
-- `Menu > Load project`: choose a saved project, then tap the lawn to place it on the current AR ground plane.
+- `Menu > New project`: start a blank project named with a human-readable date/time.
+- `Menu > Save project`: save current AR shapes/labels. Projects also autosave after edits.
+- `Menu > Load project`: choose a saved project. It restores automatically when GPS, compass, AR tracking, and a ground plane are ready.
 - `Menu > Rename project`: rename a saved project.
 - `Menu > Delete project`: delete a saved project file.
 
 ## Project Save/Load
 
-Projects are saved privately inside the app. They store the current AR shapes, labels, colors, and ground-plane-relative geometry.
+Projects are saved privately inside the app. The first drawing action creates and autosaves a project if one is not already active. Project files store:
 
-Because local ARCore coordinates reset when the app restarts, loading a project requires a placement step: select the project, then tap the lawn where that saved project should be placed. Automatic return-to-the-exact-same-yard-position still requires ARCore Geospatial/VPS setup.
+- Project id, name, created time, and updated time.
+- GPS origin latitude/longitude/altitude/accuracy.
+- Shape type, label, color, shape points, and label point.
+- Shape points as east/north/up meter offsets from the saved GPS origin.
+
+When loading, the app compares the saved project origin with the phone's current GPS fix, uses the current compass heading to align north/east to the current AR session, and recreates ARCore anchors on the detected ground plane. It no longer waits for a tap after loading.
+
+Automatic return-to-the-exact-same-yard-position still depends on GPS/compass quality. ARCore Geospatial/VPS would be the next step for more precise outdoor relocalization.
