@@ -19,6 +19,7 @@ import android.location.LocationManager;
 import android.opengl.GLSurfaceView;
 import android.os.Bundle;
 import android.os.Handler;
+import android.os.SystemClock;
 import android.text.InputType;
 import android.view.Gravity;
 import android.view.PixelCopy;
@@ -43,6 +44,8 @@ import java.util.List;
 
 public final class ArLawnActivity extends Activity implements ArOverlayView.Callback, SensorEventListener, LocationListener {
     private static final int REQUEST_CAMERA = 77;
+    private static final float HEADING_VECTOR_MIN_HORIZONTAL = 0.35f;
+    private static final long LOCATION_READY_MAX_AGE_MS = 60000L;
 
     private GLSurfaceView glSurfaceView;
     private ArOverlayView overlayView;
@@ -67,7 +70,7 @@ public final class ArLawnActivity extends Activity implements ArOverlayView.Call
         @Override
         public void run() {
             updateStatus();
-            if (projectDirty && currentLocation != null && hasPose) {
+            if (projectDirty && hasFreshLocation() && hasPose) {
                 autoSaveProjectSoon();
             }
             handler.postDelayed(this, 500L);
@@ -389,8 +392,8 @@ public final class ArLawnActivity extends Activity implements ArOverlayView.Call
             toast("Saved " + baseProject.name);
             return;
         }
-        if (currentLocation == null) {
-            toast("Waiting for GPS before saving");
+        if (!hasFreshLocation()) {
+            toast("Waiting for current GPS before saving");
             return;
         }
         if (!hasPose) {
@@ -438,8 +441,8 @@ public final class ArLawnActivity extends Activity implements ArOverlayView.Call
     }
 
     private void loadProjectUsingGps(final SavedProject project) {
-        if (currentLocation == null) {
-            toast("Waiting for GPS before loading");
+        if (!hasFreshLocation()) {
+            toast("Waiting for current GPS before loading");
             return;
         }
         if (!hasPose) {
@@ -539,6 +542,7 @@ public final class ArLawnActivity extends Activity implements ArOverlayView.Call
                 .setTitle("How Lawn Mapper Works")
                 .setMessage(
                         "Scan: Move slowly until the status says AR locked to ground planes.\n\n"
+                                + "Estimated ground: If AR cannot see the lawn directly, drawing uses the last detected or estimated ground height.\n\n"
                                 + "Snap: Saves the live camera image with the AR shapes and labels.\n\n"
                                 + "Point: Tap the lawn to add a labeled dot.\n\n"
                                 + "Box: Drag from one corner of a lawn area to the opposite corner.\n\n"
@@ -548,11 +552,11 @@ public final class ArLawnActivity extends Activity implements ArOverlayView.Call
                                 + "Edit: Tap a shape or label to rename or delete it.\n\n"
                                 + "New project: Starts a blank project named by date and time.\n\n"
                                 + "Save project: Saves the current shapes and labels. Projects also autosave after edits.\n\n"
-                                + "Load project: Pick a saved project. It loads by GPS position when AR tracking, GPS, and compass are ready.\n\n"
+                                + "Load project: Pick a saved project. Saved points load from their stored GPS positions when AR tracking, GPS, and compass are ready.\n\n"
                                 + "Rename project: Changes a saved project's name.\n\n"
                                 + "Delete project: Removes a saved project file.\n\n"
                                 + "View snapshots: Opens saved photos so you can preview or share them.\n\n"
-                                + "GPS loading uses phone GPS accuracy. For tighter automatic return-to-yard placement, the future Geospatial/VPS setup is still needed."
+                                + "GPS loading uses phone GPS accuracy. For tighter return-to-yard placement, the future Geospatial/VPS setup is still needed."
                 )
                 .setPositiveButton("OK", null)
                 .show();
@@ -653,9 +657,9 @@ public final class ArLawnActivity extends Activity implements ArOverlayView.Call
             return;
         }
         String project = currentProject == null ? "Unsaved" : currentProject.name;
-        String gps = currentLocation == null ? "GPS waiting" : "GPS " + Math.round(currentLocation.hasAccuracy() ? currentLocation.getAccuracy() : 0f) + "m";
+        String gps = gpsStatusText();
         String compass = hasPose ? "Compass ready" : "Compass waiting";
-        statusText.setText("AR " + overlayView.getMode().name() + " | " + project + " | " + gps + " | " + compass
+        statusText.setText(overlayView.getMode().name() + " | " + project + " | " + renderer.getStatus() + " | " + gps + " | " + compass
                 + " | " + renderer.getAnnotationCount() + " anchored");
     }
 
@@ -687,7 +691,7 @@ public final class ArLawnActivity extends Activity implements ArOverlayView.Call
             updateStatus();
             return;
         }
-        if (currentLocation == null || !hasPose) {
+        if (!hasFreshLocation() || !hasPose) {
             updateStatus();
             return;
         }
@@ -742,6 +746,30 @@ public final class ArLawnActivity extends Activity implements ArOverlayView.Call
         };
     }
 
+    private boolean hasFreshLocation() {
+        return currentLocation != null && locationAgeMillis(currentLocation) <= LOCATION_READY_MAX_AGE_MS;
+    }
+
+    private String gpsStatusText() {
+        if (currentLocation == null) {
+            return "GPS waiting";
+        }
+        long ageMs = locationAgeMillis(currentLocation);
+        String accuracy = currentLocation.hasAccuracy() ? Math.round(currentLocation.getAccuracy()) + "m" : "?m";
+        if (ageMs > LOCATION_READY_MAX_AGE_MS) {
+            return "GPS old " + accuracy;
+        }
+        return "GPS " + accuracy;
+    }
+
+    private static long locationAgeMillis(Location location) {
+        long elapsedNanos = location.getElapsedRealtimeNanos();
+        if (elapsedNanos <= 0L) {
+            return Long.MAX_VALUE;
+        }
+        return Math.max(0L, (SystemClock.elapsedRealtimeNanos() - elapsedNanos) / 1000000L);
+    }
+
     private void startLocationAndSensors() {
         if (sensorManager != null && rotationVectorSensor != null) {
             sensorManager.registerListener(this, rotationVectorSensor, SensorManager.SENSOR_DELAY_UI);
@@ -774,7 +802,7 @@ public final class ArLawnActivity extends Activity implements ArOverlayView.Call
     public void onLocationChanged(Location location) {
         setCurrentLocationIfBetter(location);
         updateStatus();
-        if (projectDirty && hasPose) {
+        if (projectDirty && hasPose && hasFreshLocation()) {
             autoSaveProjectSoon();
         }
     }
@@ -804,15 +832,32 @@ public final class ArLawnActivity extends Activity implements ArOverlayView.Call
         float[] orientation = new float[3];
         SensorManager.getRotationMatrixFromVector(rotationMatrix, event.values);
         SensorManager.getOrientation(rotationMatrix, orientation);
-        currentAzimuthDegrees = GeoMath.normalizeCompass((float) Math.toDegrees(orientation[0]));
+        currentAzimuthDegrees = computeCameraAlignedAzimuth(rotationMatrix, orientation[0]);
         hasPose = true;
-        if (projectDirty && currentLocation != null) {
+        if (projectDirty && hasFreshLocation()) {
             autoSaveProjectSoon();
         }
     }
 
     @Override
     public void onAccuracyChanged(Sensor sensor, int accuracy) {
+    }
+
+    private static float computeCameraAlignedAzimuth(float[] rotationMatrix, float fallbackAzimuthRadians) {
+        float east = -rotationMatrix[2];
+        float north = -rotationMatrix[5];
+        if (horizontalLength(east, north) < HEADING_VECTOR_MIN_HORIZONTAL) {
+            east = rotationMatrix[1];
+            north = rotationMatrix[4];
+        }
+        if (horizontalLength(east, north) < 0.0001f) {
+            return GeoMath.normalizeCompass((float) Math.toDegrees(fallbackAzimuthRadians));
+        }
+        return GeoMath.normalizeCompass((float) Math.toDegrees(Math.atan2(east, north)));
+    }
+
+    private static float horizontalLength(float east, float north) {
+        return (float) Math.sqrt(east * east + north * north);
     }
 
     private int dp(int value) {

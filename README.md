@@ -38,10 +38,10 @@ In AR mode:
 
 1. Move the phone slowly over the lawn until the status says a ground plane is found.
 2. Draw a point, box, circle, or freehand shape on the lawn area.
-3. The app raycasts the drawn points onto the detected horizontal plane.
+3. The app raycasts the drawn points onto the detected horizontal plane. If ARCore cannot directly see a usable ground plane, it falls back to the last detected or estimated lawn height.
 4. The shape is stored as local 3D coordinates attached to an ARCore anchor.
 
-This locks shapes while the AR session is running. Saved projects also store a GPS origin and compass-aligned ground-plane offsets so they can reload automatically near the same lawn area. Raw phone GPS/compass is still not survey-grade; tighter repeat placement requires ARCore Geospatial/VPS setup; see `docs/arcore-geospatial-requirements.md`.
+This locks shapes while the AR session is running. Saved projects also store the phone save pose, a project GPS origin, per-shape observer pose, per-point GPS coordinates, and compass-aligned ground-plane offsets so they can reload automatically near the same lawn area. Raw phone GPS/compass is still not survey-grade; tighter repeat placement requires ARCore Geospatial/VPS setup; see `docs/arcore-geospatial-requirements.md`.
 
 ## Controls
 
@@ -55,7 +55,7 @@ This locks shapes while the AR session is running. Saved projects also store a G
 - `Menu`: view/share snapshots, open Help, or clear anchors.
 - `Menu > New project`: start a blank project named with a human-readable date/time.
 - `Menu > Save project`: save current AR shapes/labels. Projects also autosave after edits.
-- `Menu > Load project`: choose a saved project. It restores automatically when GPS, compass, AR tracking, and a ground plane are ready.
+- `Menu > Load project`: choose a saved project. It restores automatically when GPS, compass, and AR tracking are ready, using detected or estimated ground height.
 - `Menu > Rename project`: rename a saved project.
 - `Menu > Delete project`: delete a saved project file.
 
@@ -65,9 +65,12 @@ Projects are saved privately inside the app. The first drawing action creates an
 
 - Project id, name, created time, and updated time.
 - GPS origin latitude/longitude/altitude/accuracy.
+- Phone save pose and compass-aligned save direction.
 - Shape type, label, color, shape points, and label point.
+- Per-shape observer pose.
+- Per-point GPS coordinates for shape vertices and labels.
 - Shape points as east/north/up meter offsets from the saved GPS origin.
 
-When loading, the app compares the saved project origin with the phone's current GPS fix, uses the current compass heading to align north/east to the current AR session, and recreates ARCore anchors on the detected ground plane. It no longer waits for a tap after loading.
+When loading, the app prefers each saved point's GPS coordinate, uses the current compass heading to align north/east to the current AR session, and recreates ARCore anchors on detected or estimated ground. It no longer waits for a tap after loading, and it is less sensitive to which way the phone is pointing when the project is opened.
 
 Automatic return-to-the-exact-same-yard-position still depends on GPS/compass quality. ARCore Geospatial/VPS would be the next step for more precise outdoor relocalization.

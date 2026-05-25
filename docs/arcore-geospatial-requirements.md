@@ -4,7 +4,7 @@
 
 The app includes a local ARCore ground-lock mode. It uses ARCore anchors on detected horizontal planes, so shapes stay locked to the lawn while the AR session is running.
 
-The app can save/load named projects now. Projects store a GPS origin plus compass-aligned ground-plane offsets, and loading recreates the saved anchors automatically once GPS, compass, AR tracking, and a horizontal ground plane are ready.
+The app can save/load named projects now. Projects store a GPS origin, phone save pose, per-shape observer pose, per-point GPS coordinates, and compass-aligned ground-plane offsets. Loading recreates the saved anchors automatically once GPS, compass, and AR tracking are ready, using detected or estimated ground height.
 
 This is a practical prototype, not true visual/geospatial relocalization. The fully persistent version that relocalizes lawn labels more tightly on a later visit still needs ARCore Geospatial/VPS authorization through Google Cloud. I did not build that part yet because the app needs a real Google Cloud ARCore API credential that should be owned by the repo/account owner.
 
@@ -12,7 +12,7 @@ This is a practical prototype, not true visual/geospatial relocalization. The fu
 
 Plain ARCore local anchors are good for keeping content stable while one AR session is running. They are not enough for the main goal of returning later and seeing the same lawn labels after the app restarts.
 
-The current app bridges that gap with phone GPS and compass heading. That can be useful in a yard, but it inherits raw GPS and magnetometer error, so shapes can still be offset after walking away or reopening later.
+The current app bridges that gap with phone GPS, camera-aligned heading, and per-point saved GPS coordinates. That can be useful in a yard, but it inherits raw GPS and magnetometer error, so shapes can still be offset after walking away or reopening later.
 
 For that, the app should use ARCore Geospatial anchors:
 

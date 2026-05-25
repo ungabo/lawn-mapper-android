@@ -6,6 +6,7 @@ import android.location.Location;
 import android.opengl.GLES11Ext;
 import android.opengl.GLES20;
 import android.opengl.GLSurfaceView;
+import android.opengl.Matrix;
 import android.os.Handler;
 import android.os.Looper;
 import android.view.Surface;
@@ -58,6 +59,8 @@ final class ArLawnRenderer implements GLSurfaceView.Renderer {
             0xFFDC8ADD,
             0xFF8AE2D8
     };
+    private static final float DEFAULT_PHONE_HEIGHT_METERS = 1.4f;
+    private static final float HEADING_VECTOR_MIN_HORIZONTAL = 0.35f;
 
     private final Activity activity;
     private final ArOverlayView overlayView;
@@ -76,6 +79,8 @@ final class ArLawnRenderer implements GLSurfaceView.Renderer {
     private int pendingRotation = Surface.ROTATION_0;
     private volatile String status = "AR starting";
     private boolean cameraTextureSet;
+    private boolean hasEstimatedGroundY;
+    private float estimatedGroundY;
 
     ArLawnRenderer(Activity activity, ArOverlayView overlayView) {
         this.activity = activity;
@@ -129,7 +134,7 @@ final class ArLawnRenderer implements GLSurfaceView.Renderer {
         for (PointF point : simplifyForHitTesting(type, screenPoints)) {
             float[] worldPoint = hitGroundPoint(latestFrame, point.x, point.y);
             if (worldPoint == null) {
-                postFailed(callback, "Aim at the lawn and scan until a ground plane is found");
+                postFailed(callback, "Move slowly until AR tracking can estimate the lawn plane");
                 return;
             }
             worldPoints.add(worldPoint);
@@ -177,6 +182,12 @@ final class ArLawnRenderer implements GLSurfaceView.Renderer {
             project.createdAtMillis = baseProject.createdAtMillis;
         }
         project.name = projectName;
+        project.hasSavePose = true;
+        project.savePhoneLatitude = currentLocation.getLatitude();
+        project.savePhoneLongitude = currentLocation.getLongitude();
+        project.savePhoneAltitude = currentLocation.hasAltitude() ? currentLocation.getAltitude() : 0d;
+        project.savePhoneAccuracyMeters = currentLocation.hasAccuracy() ? currentLocation.getAccuracy() : 0f;
+        project.saveAzimuthDegrees = azimuthDegrees;
 
         float[] origin = null;
         synchronized (annotationLock) {
@@ -201,14 +212,24 @@ final class ArLawnRenderer implements GLSurfaceView.Renderer {
 
             for (ArAnnotation annotation : annotations) {
                 SavedProjectAnnotation saved = new SavedProjectAnnotation();
+                saved.id = annotation.id;
                 saved.type = annotation.type;
                 saved.label = annotation.label;
                 saved.color = annotation.color;
+                saved.hasObserverPose = true;
+                saved.observerLatitude = currentLocation.getLatitude();
+                saved.observerLongitude = currentLocation.getLongitude();
+                saved.observerAltitude = currentLocation.hasAltitude() ? currentLocation.getAltitude() : 0d;
+                saved.observerAccuracyMeters = currentLocation.hasAccuracy() ? currentLocation.getAccuracy() : 0f;
+                saved.observerAzimuthDegrees = azimuthDegrees;
                 Pose anchorPose = annotation.anchor.getPose();
                 for (float[] localPoint : annotation.localPoints) {
-                    saved.points.add(basis.worldDeltaToEnu(subtract(anchorPose.transformPoint(localPoint), origin), azimuthDegrees));
+                    float[] pointFromOrigin = basis.worldDeltaToEnu(subtract(anchorPose.transformPoint(localPoint), origin), azimuthDegrees);
+                    saved.points.add(pointFromOrigin);
+                    saved.geoPoints.add(SavedGeoPoint.fromLocation(offsetLocation(originLocation, pointFromOrigin[0], pointFromOrigin[1], pointFromOrigin[2])));
                 }
                 saved.labelPoint = basis.worldDeltaToEnu(subtract(anchorPose.transformPoint(annotation.labelLocalPoint), origin), azimuthDegrees);
+                saved.labelGeoPoint = SavedGeoPoint.fromLocation(offsetLocation(originLocation, saved.labelPoint[0], saved.labelPoint[1], saved.labelPoint[2]));
                 project.annotations.add(saved);
             }
         }
@@ -252,8 +273,8 @@ final class ArLawnRenderer implements GLSurfaceView.Renderer {
 
             for (SavedProjectAnnotation saved : project.annotations) {
                 ArrayList<float[]> worldPoints = new ArrayList<>();
-                for (float[] savedPoint : saved.points) {
-                    float[] fromCurrent = subtract(savedPoint, currentFromProject);
+                for (int i = 0; i < saved.points.size(); i++) {
+                    float[] fromCurrent = pointFromCurrent(saved, i, currentLocation, currentFromProject);
                     worldPoints.add(basis.enuFromCurrentToWorld(fromCurrent, azimuthDegrees));
                 }
                 if (worldPoints.isEmpty()) {
@@ -265,9 +286,12 @@ final class ArLawnRenderer implements GLSurfaceView.Renderer {
                 for (float[] worldPoint : worldPoints) {
                     localPoints.add(inverseAnchorPose.transformPoint(worldPoint));
                 }
-                float[] labelFromCurrent = subtract(saved.labelPoint, currentFromProject);
+                float[] labelFromCurrent = saved.labelGeoPoint == null
+                        ? subtract(saved.labelPoint, currentFromProject)
+                        : enuFromCurrentToGeo(currentLocation, saved.labelGeoPoint);
                 float[] labelPoint = inverseAnchorPose.transformPoint(basis.enuFromCurrentToWorld(labelFromCurrent, azimuthDegrees));
                 ArAnnotation annotation = new ArAnnotation(
+                        saved.id,
                         saved.type,
                         saved.color,
                         anchor,
@@ -346,11 +370,17 @@ final class ArLawnRenderer implements GLSurfaceView.Renderer {
             if (plane.getTrackingState() == TrackingState.TRACKING
                     && plane.getType() == Plane.Type.HORIZONTAL_UPWARD_FACING) {
                 trackingPlanes++;
+                estimatedGroundY = plane.getCenterPose().ty();
+                hasEstimatedGroundY = true;
             }
         }
-        status = trackingPlanes > 0
-                ? "AR locked to ground planes"
-                : "Scan the lawn slowly to find ground";
+        if (trackingPlanes > 0) {
+            status = "AR locked to ground planes";
+        } else if (hasEstimatedGroundY) {
+            status = "AR using estimated ground";
+        } else {
+            status = "AR using rough ground estimate";
+        }
     }
 
     private ArrayList<ArProjectedAnnotation> projectAnnotations() {
@@ -406,6 +436,13 @@ final class ArLawnRenderer implements GLSurfaceView.Renderer {
         mainHandler.post(() -> callback.onFailed(message));
     }
 
+    private float[] pointFromCurrent(SavedProjectAnnotation saved, int index, Location currentLocation, float[] currentFromProject) {
+        if (index < saved.geoPoints.size()) {
+            return enuFromCurrentToGeo(currentLocation, saved.geoPoints.get(index));
+        }
+        return subtract(saved.points.get(index), currentFromProject);
+    }
+
     private float[] hitGroundPoint(Frame frame, float x, float y) {
         for (HitResult hit : frame.hitTest(x, y)) {
             Trackable trackable = hit.getTrackable();
@@ -414,39 +451,106 @@ final class ArLawnRenderer implements GLSurfaceView.Renderer {
                 if (plane.getTrackingState() == TrackingState.TRACKING
                         && plane.getType() == Plane.Type.HORIZONTAL_UPWARD_FACING
                         && plane.isPoseInPolygon(hit.getHitPose())) {
+                    estimatedGroundY = hit.getHitPose().ty();
+                    hasEstimatedGroundY = true;
                     return hit.getHitPose().getTranslation();
                 }
             }
         }
-        return null;
+        return hitEstimatedGroundPoint(frame, x, y);
     }
 
     private CameraBasis getCameraBasis() {
         if (latestFrame == null || latestFrame.getCamera().getTrackingState() != TrackingState.TRACKING) {
             return null;
         }
-        Float groundY = null;
-        Session current = session;
-        if (current != null) {
-            for (Plane plane : current.getAllTrackables(Plane.class)) {
-                if (plane.getTrackingState() == TrackingState.TRACKING
-                        && plane.getType() == Plane.Type.HORIZONTAL_UPWARD_FACING) {
-                    groundY = plane.getCenterPose().ty();
-                    break;
-                }
-            }
+        Pose cameraPose = latestFrame.getCamera().getPose();
+        float groundY = estimateGroundY(cameraPose);
+        float[] camera = cameraPose.getTranslation();
+        float[] heading = chooseHorizontalHeadingVector(cameraPose);
+        float[] right = new float[]{-heading[2], 0f, heading[0]};
+        return new CameraBasis(new float[]{camera[0], groundY, camera[2]}, heading, right);
+    }
+
+    private float[] hitEstimatedGroundPoint(Frame frame, float x, float y) {
+        if (width <= 0 || height <= 0) {
+            return null;
         }
-        if (groundY == null) {
+        Camera camera = frame.getCamera();
+        if (camera.getTrackingState() != TrackingState.TRACKING) {
+            return null;
+        }
+        Pose cameraPose = camera.getPose();
+        float groundY = estimateGroundY(cameraPose);
+        float[] localViewMatrix = new float[16];
+        float[] localProjectionMatrix = new float[16];
+        float[] localViewProjectionMatrix = new float[16];
+        float[] inverseViewProjectionMatrix = new float[16];
+        camera.getViewMatrix(localViewMatrix, 0);
+        camera.getProjectionMatrix(localProjectionMatrix, 0, 0.1f, 100f);
+        multiplyMM(localViewProjectionMatrix, localProjectionMatrix, localViewMatrix);
+        if (!Matrix.invertM(inverseViewProjectionMatrix, 0, localViewProjectionMatrix, 0)) {
             return null;
         }
 
-        Pose cameraPose = latestFrame.getCamera().getPose();
-        float[] camera = cameraPose.getTranslation();
+        float ndcX = (x / width) * 2f - 1f;
+        float ndcY = 1f - (y / height) * 2f;
+        float[] near = multiplyMV(inverseViewProjectionMatrix, new float[]{ndcX, ndcY, -1f, 1f});
+        float[] far = multiplyMV(inverseViewProjectionMatrix, new float[]{ndcX, ndcY, 1f, 1f});
+        divideByW(near);
+        divideByW(far);
+
+        float[] direction = subtract(far, near);
+        if (Math.abs(direction[1]) < 0.0001f) {
+            return null;
+        }
+        float t = (groundY - near[1]) / direction[1];
+        if (t <= 0f || t > 200f) {
+            return null;
+        }
+        return new float[]{
+                near[0] + direction[0] * t,
+                groundY,
+                near[2] + direction[2] * t
+        };
+    }
+
+    private float estimateGroundY(Pose cameraPose) {
+        Float trackedGroundY = findTrackedGroundY();
+        if (trackedGroundY != null) {
+            estimatedGroundY = trackedGroundY;
+            hasEstimatedGroundY = true;
+            return trackedGroundY;
+        }
+        if (!hasEstimatedGroundY) {
+            estimatedGroundY = cameraPose.ty() - DEFAULT_PHONE_HEIGHT_METERS;
+            hasEstimatedGroundY = true;
+        }
+        return estimatedGroundY;
+    }
+
+    private Float findTrackedGroundY() {
+        Session current = session;
+        if (current == null) {
+            return null;
+        }
+        for (Plane plane : current.getAllTrackables(Plane.class)) {
+            if (plane.getTrackingState() == TrackingState.TRACKING
+                    && plane.getType() == Plane.Type.HORIZONTAL_UPWARD_FACING) {
+                return plane.getCenterPose().ty();
+            }
+        }
+        return null;
+    }
+
+    private static float[] chooseHorizontalHeadingVector(Pose cameraPose) {
         float[] forward = cameraPose.rotateVector(new float[]{0f, 0f, -1f});
+        if (horizontalLength(forward) < HEADING_VECTOR_MIN_HORIZONTAL) {
+            forward = cameraPose.rotateVector(new float[]{0f, 1f, 0f});
+        }
         forward[1] = 0f;
         normalizeHorizontal(forward);
-        float[] right = new float[]{-forward[2], 0f, forward[0]};
-        return new CameraBasis(new float[]{camera[0], groundY, camera[2]}, forward, right);
+        return forward;
     }
 
     private List<PointF> simplifyForHitTesting(String type, List<PointF> screenPoints) {
@@ -541,6 +645,16 @@ final class ArLawnRenderer implements GLSurfaceView.Renderer {
         };
     }
 
+    private static void divideByW(float[] vector) {
+        if (vector.length < 4 || Math.abs(vector[3]) < 0.0001f) {
+            return;
+        }
+        vector[0] /= vector[3];
+        vector[1] /= vector[3];
+        vector[2] /= vector[3];
+        vector[3] = 1f;
+    }
+
     private static float[] add(float[] a, float[] b) {
         return new float[]{a[0] + b[0], a[1] + b[1], a[2] + b[2]};
     }
@@ -550,7 +664,7 @@ final class ArLawnRenderer implements GLSurfaceView.Renderer {
     }
 
     private static void normalizeHorizontal(float[] vector) {
-        float length = (float) Math.sqrt(vector[0] * vector[0] + vector[2] * vector[2]);
+        float length = horizontalLength(vector);
         if (length < 0.0001f) {
             vector[0] = 0f;
             vector[2] = -1f;
@@ -558,6 +672,10 @@ final class ArLawnRenderer implements GLSurfaceView.Renderer {
         }
         vector[0] /= length;
         vector[2] /= length;
+    }
+
+    private static float horizontalLength(float[] vector) {
+        return (float) Math.sqrt(vector[0] * vector[0] + vector[2] * vector[2]);
     }
 
     private static Location offsetLocation(Location origin, float eastMeters, float northMeters, float upMeters) {
@@ -575,11 +693,19 @@ final class ArLawnRenderer implements GLSurfaceView.Renderer {
     }
 
     private static float[] enuBetween(double originLat, double originLon, Location currentLocation) {
+        return enuBetween(originLat, originLon, currentLocation.getLatitude(), currentLocation.getLongitude());
+    }
+
+    private static float[] enuFromCurrentToGeo(Location currentLocation, SavedGeoPoint point) {
+        return enuBetween(currentLocation.getLatitude(), currentLocation.getLongitude(), point.latitude, point.longitude);
+    }
+
+    private static float[] enuBetween(double originLat, double originLon, double targetLat, double targetLon) {
         float[] distance = new float[1];
-        Location.distanceBetween(originLat, originLon, currentLocation.getLatitude(), originLon, distance);
-        float north = currentLocation.getLatitude() >= originLat ? distance[0] : -distance[0];
-        Location.distanceBetween(originLat, originLon, originLat, currentLocation.getLongitude(), distance);
-        float east = currentLocation.getLongitude() >= originLon ? distance[0] : -distance[0];
+        Location.distanceBetween(originLat, originLon, targetLat, originLon, distance);
+        float north = targetLat >= originLat ? distance[0] : -distance[0];
+        Location.distanceBetween(originLat, originLon, originLat, targetLon, distance);
+        float east = targetLon >= originLon ? distance[0] : -distance[0];
         return new float[]{east, north, 0f};
     }
 

@@ -32,11 +32,16 @@ Each annotation stores:
 - Creation time.
 - Color.
 - GPS origin latitude/longitude/altitude/accuracy for the project.
+- Phone save pose and compass-aligned save direction.
+- Per-shape observer pose.
+- Per-point GPS coordinates for shape vertices and labels.
 - Compass-aligned east/north/up meter offsets from that project origin.
 
 The launcher AR mode uses ARCore plane tracking for the active session. Each drawn screen point is raycast onto a detected horizontal ground plane and stored relative to an ARCore anchor, so the overlay follows real camera translation and parallax while the app is open.
 
-This gives practical in-session ground locking now. Later-session reloads use GPS, compass heading, and the current AR ground plane; tighter precision still needs a cloud/geospatial relocalization service.
+If ARCore cannot see a ground plane at the drawn screen point, the renderer intersects that screen ray with the last detected or estimated lawn height. This allows placing a lawn marker even when a bush or other object blocks the visible ground.
+
+This gives practical in-session ground locking now. Later-session reloads use each saved point's GPS coordinate, compass heading, and the current AR ground estimate; tighter precision still needs a cloud/geospatial relocalization service.
 
 ## Project Save/Load
 
@@ -46,10 +51,13 @@ Each project stores:
 
 - Project id, name, created time, updated time.
 - GPS origin latitude/longitude/altitude/accuracy.
+- Phone save pose and compass-aligned save direction.
 - Shape type, label, color.
+- Per-shape observer pose.
+- Per-point GPS coordinates for shape vertices and labels.
 - Shape points and label point as east/north/up meter offsets from the saved GPS origin.
 
-Loading is automatic: the user selects a project, then the app waits for GPS, compass, AR tracking, and a detected horizontal ground plane. It compares the current phone location to the saved GPS origin, aligns saved east/north offsets to the current compass heading, and creates fresh ARCore anchors in the current session.
+Loading is automatic: the user selects a project, then the app waits for GPS, compass, and AR tracking. It prefers the saved GPS coordinate for each shape vertex and label, aligns saved east/north offsets to the current compass heading, and creates fresh ARCore anchors in the current session on detected or estimated ground.
 
 ## Accuracy Notes
 

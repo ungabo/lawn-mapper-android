@@ -10,7 +10,7 @@ import java.util.List;
 import java.util.UUID;
 
 final class ArAnnotation {
-    final String id = UUID.randomUUID().toString();
+    final String id;
     final String type;
     final int color;
     final Anchor anchor;
@@ -19,6 +19,11 @@ final class ArAnnotation {
     volatile String label = "";
 
     ArAnnotation(String type, int color, Anchor anchor, List<float[]> points, float[] labelPoint) {
+        this(UUID.randomUUID().toString(), type, color, anchor, points, labelPoint);
+    }
+
+    ArAnnotation(String id, String type, int color, Anchor anchor, List<float[]> points, float[] labelPoint) {
+        this.id = id == null || id.trim().isEmpty() ? UUID.randomUUID().toString() : id;
         this.type = type;
         this.color = color;
         this.anchor = anchor;
