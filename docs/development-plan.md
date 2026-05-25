@@ -19,6 +19,7 @@ Build an installable Android app that lets you look at a lawn through the phone 
 - Snapshot button that saves the current AR camera view with labels/shapes into the phone gallery.
 - Snapshot gallery for viewing and sharing saved images.
 - Help menu explaining every tool.
+- Project save/load/delete/rename.
 - Local persistence in app-private JSON so annotations survive app restarts.
 
 ## Persistence Model
@@ -38,6 +39,18 @@ Each annotation stores:
 The launcher AR mode uses ARCore plane tracking for the active session. Each drawn screen point is raycast onto a detected horizontal ground plane and stored relative to an ARCore anchor, so the overlay follows real camera translation and parallax while the app is open.
 
 This gives practical in-session ground locking now, while later-session precision still needs a cloud/geospatial relocalization service.
+
+## Project Save/Load
+
+Saved projects live in app-private JSON files under the app data directory. New projects default to a human-readable date/time name such as `May 25, 2026 3:42 PM`.
+
+Each project stores:
+
+- Project id, name, created time, updated time.
+- Shape type, label, color.
+- Shape points and label point relative to a saved project origin.
+
+Loading is a deliberate placement flow: the user selects a project, then taps the currently detected lawn/ground plane. The app creates fresh ARCore anchors in the current session and restores the saved shapes relative to that tap.
 
 ## Accuracy Notes
 

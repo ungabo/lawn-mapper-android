@@ -53,3 +53,13 @@ This locks shapes while the AR session is running. Reopening the app later and r
 - `Erase`: tap or drag through a shape to remove it.
 - `Edit`: tap a shape or label to rename or delete it.
 - `Menu`: view/share snapshots, open Help, or clear anchors.
+- `Menu > Save project`: save current AR shapes/labels. New projects default to a human-readable date/time name.
+- `Menu > Load project`: choose a saved project, then tap the lawn to place it on the current AR ground plane.
+- `Menu > Rename project`: rename a saved project.
+- `Menu > Delete project`: delete a saved project file.
+
+## Project Save/Load
+
+Projects are saved privately inside the app. They store the current AR shapes, labels, colors, and ground-plane-relative geometry.
+
+Because local ARCore coordinates reset when the app restarts, loading a project requires a placement step: select the project, then tap the lawn where that saved project should be placed. Automatic return-to-the-exact-same-yard-position still requires ARCore Geospatial/VPS setup.

@@ -40,6 +40,9 @@ public final class ArLawnActivity extends Activity implements ArOverlayView.Call
     private GLSurfaceView glSurfaceView;
     private ArOverlayView overlayView;
     private ArLawnRenderer renderer;
+    private SavedProjectStore projectStore;
+    private SavedProject currentProject;
+    private SavedProject pendingProject;
     private Session session;
     private boolean installRequested;
     private boolean sessionResumed;
@@ -59,6 +62,7 @@ public final class ArLawnActivity extends Activity implements ArOverlayView.Call
         super.onCreate(savedInstanceState);
         requestWindowFeature(Window.FEATURE_NO_TITLE);
         getWindow().addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON);
+        projectStore = new SavedProjectStore(this);
         setupUi();
         if (checkSelfPermission(Manifest.permission.CAMERA) != PackageManager.PERMISSION_GRANTED) {
             requestPermissions(new String[]{Manifest.permission.CAMERA}, REQUEST_CAMERA);
@@ -233,6 +237,33 @@ public final class ArLawnActivity extends Activity implements ArOverlayView.Call
         glSurfaceView.queueEvent(() -> renderer.removeAnnotation(annotation));
     }
 
+    @Override
+    public boolean isProjectPlacementActive() {
+        return pendingProject != null;
+    }
+
+    @Override
+    public void requestPlaceProject(PointF screenPoint) {
+        final SavedProject project = pendingProject;
+        if (project == null) {
+            return;
+        }
+        glSurfaceView.queueEvent(() -> renderer.placeProjectOnGlThread(project, screenPoint, new ArLawnRenderer.ProjectLoadCallback() {
+            @Override
+            public void onLoaded(int annotationCount) {
+                currentProject = project;
+                pendingProject = null;
+                toast("Loaded " + project.name);
+                updateStatus();
+            }
+
+            @Override
+            public void onFailed(String message) {
+                toast(message);
+            }
+        }));
+    }
+
     private void promptLabel(final ArAnnotation annotation) {
         final EditText input = new EditText(this);
         input.setSingleLine(false);
@@ -257,7 +288,12 @@ public final class ArLawnActivity extends Activity implements ArOverlayView.Call
         new AlertDialog.Builder(this)
                 .setTitle("Clear AR annotations?")
                 .setMessage("This removes the AR anchors in this session.")
-                .setPositiveButton("Clear", (dialog, which) -> glSurfaceView.queueEvent(() -> renderer.clearAnnotations()))
+                .setPositiveButton("Clear", (dialog, which) -> {
+                    currentProject = null;
+                    pendingProject = null;
+                    glSurfaceView.queueEvent(() -> renderer.clearAnnotations());
+                    updateStatus();
+                })
                 .setNegativeButton("Cancel", null)
                 .show();
     }
@@ -271,18 +307,152 @@ public final class ArLawnActivity extends Activity implements ArOverlayView.Call
     }
 
     private void showMenu() {
-        String[] items = new String[]{"View snapshots", "Help", "Clear anchors"};
+        String[] items = new String[]{
+                "Save project",
+                "Load project",
+                "Rename project",
+                "Delete project",
+                "View snapshots",
+                "Help",
+                "Clear anchors"
+        };
         new AlertDialog.Builder(this)
                 .setTitle("Menu")
                 .setItems(items, (dialog, which) -> {
                     if (which == 0) {
-                        startActivity(new Intent(this, SnapshotGalleryActivity.class));
+                        saveProject();
                     } else if (which == 1) {
-                        showHelp();
+                        chooseProjectToLoad();
                     } else if (which == 2) {
+                        chooseProjectToRename();
+                    } else if (which == 3) {
+                        chooseProjectToDelete();
+                    } else if (which == 4) {
+                        startActivity(new Intent(this, SnapshotGalleryActivity.class));
+                    } else if (which == 5) {
+                        showHelp();
+                    } else if (which == 6) {
                         confirmClear();
                     }
                 })
+                .show();
+    }
+
+    private void saveProject() {
+        final SavedProject baseProject = currentProject;
+        final String projectName = baseProject == null ? projectStore.defaultProjectName() : baseProject.name;
+        glSurfaceView.queueEvent(() -> renderer.buildProjectOnGlThread(projectName, baseProject, new ArLawnRenderer.ProjectBuildCallback() {
+            @Override
+            public void onBuilt(SavedProject project) {
+                if (projectStore.save(project)) {
+                    currentProject = project;
+                    toast("Saved " + project.name);
+                    updateStatus();
+                } else {
+                    toast("Project save failed");
+                }
+            }
+
+            @Override
+            public void onFailed(String message) {
+                toast(message);
+            }
+        }));
+    }
+
+    private void chooseProjectToLoad() {
+        ArrayList<SavedProject> projects = projectStore.listProjects();
+        if (projects.isEmpty()) {
+            toast("No saved projects yet");
+            return;
+        }
+        String[] names = projectNames(projects);
+        new AlertDialog.Builder(this)
+                .setTitle("Load Project")
+                .setItems(names, (dialog, which) -> {
+                    SavedProject loaded = projectStore.load(projects.get(which).id);
+                    if (loaded == null) {
+                        toast("Could not load project");
+                        return;
+                    }
+                    pendingProject = loaded;
+                    toast("Tap the lawn to place " + loaded.name);
+                    updateStatus();
+                })
+                .show();
+    }
+
+    private void chooseProjectToRename() {
+        ArrayList<SavedProject> projects = projectStore.listProjects();
+        if (projects.isEmpty()) {
+            toast("No saved projects yet");
+            return;
+        }
+        String[] names = projectNames(projects);
+        new AlertDialog.Builder(this)
+                .setTitle("Rename Project")
+                .setItems(names, (dialog, which) -> promptProjectRename(projects.get(which)))
+                .show();
+    }
+
+    private void chooseProjectToDelete() {
+        ArrayList<SavedProject> projects = projectStore.listProjects();
+        if (projects.isEmpty()) {
+            toast("No saved projects yet");
+            return;
+        }
+        String[] names = projectNames(projects);
+        new AlertDialog.Builder(this)
+                .setTitle("Delete Project")
+                .setItems(names, (dialog, which) -> confirmDeleteProject(projects.get(which)))
+                .show();
+    }
+
+    private void promptProjectRename(final SavedProject project) {
+        final EditText input = new EditText(this);
+        input.setSingleLine(true);
+        input.setInputType(InputType.TYPE_CLASS_TEXT | InputType.TYPE_TEXT_FLAG_CAP_WORDS);
+        input.setText(project.name);
+        input.setSelectAllOnFocus(true);
+        input.setPadding(dp(18), dp(8), dp(18), dp(8));
+        new AlertDialog.Builder(this)
+                .setTitle("Rename Project")
+                .setView(input)
+                .setPositiveButton("Save", (dialog, which) -> {
+                    String name = input.getText().toString().trim();
+                    if (projectStore.rename(project.id, name)) {
+                        if (currentProject != null && currentProject.id.equals(project.id)) {
+                            currentProject.name = name.isEmpty() ? projectStore.defaultProjectName() : name;
+                        }
+                        toast("Renamed project");
+                        updateStatus();
+                    } else {
+                        toast("Rename failed");
+                    }
+                })
+                .setNegativeButton("Cancel", null)
+                .show();
+    }
+
+    private void confirmDeleteProject(final SavedProject project) {
+        new AlertDialog.Builder(this)
+                .setTitle("Delete " + project.name + "?")
+                .setMessage("This deletes the saved project file. Current on-screen anchors are not changed.")
+                .setPositiveButton("Delete", (dialog, which) -> {
+                    if (projectStore.delete(project.id)) {
+                        if (currentProject != null && currentProject.id.equals(project.id)) {
+                            currentProject = null;
+                        }
+                        if (pendingProject != null && pendingProject.id.equals(project.id)) {
+                            pendingProject = null;
+                        }
+                        toast("Deleted project");
+                        updateStatus();
+                    } else {
+                        toast("Delete failed");
+                    }
+                })
+                .setNegativeButton("Cancel", null)
                 .show();
     }
 
@@ -298,8 +468,12 @@ public final class ArLawnActivity extends Activity implements ArOverlayView.Call
                                 + "Free: Draw an irregular outline on the visible lawn.\n\n"
                                 + "Erase: Tap or drag through a shape to delete it.\n\n"
                                 + "Edit: Tap a shape or label to rename or delete it.\n\n"
-                                + "Menu: Opens snapshots, this help screen, and clear-all.\n\n"
-                                + "Shapes lock to the lawn while this AR session is running. Reopening later at the exact same spot still needs the future Geospatial/VPS setup."
+                                + "Save project: Saves the current shapes and labels. New projects are named by date and time.\n\n"
+                                + "Load project: Pick a saved project, then tap the lawn to place it on the current AR ground plane.\n\n"
+                                + "Rename project: Changes a saved project's name.\n\n"
+                                + "Delete project: Removes a saved project file.\n\n"
+                                + "View snapshots: Opens saved photos so you can preview or share them.\n\n"
+                                + "Shapes lock to the lawn while this AR session is running. Saved projects can be loaded later, but you place them again by tapping the lawn unless the future Geospatial/VPS setup is added."
                 )
                 .setPositiveButton("OK", null)
                 .show();
@@ -399,8 +573,22 @@ public final class ArLawnActivity extends Activity implements ArOverlayView.Call
         if (statusText == null || renderer == null) {
             return;
         }
-        statusText.setText("AR " + overlayView.getMode().name() + " | " + renderer.getStatus()
-                + " | " + renderer.getAnnotationCount() + " anchored");
+        if (pendingProject != null) {
+            statusText.setText("PLACE PROJECT | Tap lawn for " + pendingProject.name);
+            return;
+        }
+        String project = currentProject == null ? "Unsaved" : currentProject.name;
+        statusText.setText("AR " + overlayView.getMode().name() + " | " + project + " | "
+                + renderer.getAnnotationCount() + " anchored");
+    }
+
+    private String[] projectNames(ArrayList<SavedProject> projects) {
+        String[] names = new String[projects.size()];
+        for (int i = 0; i < projects.size(); i++) {
+            SavedProject project = projects.get(i);
+            names[i] = project.name + " (" + project.annotations.size() + ")";
+        }
+        return names;
     }
 
     private void toast(String message) {

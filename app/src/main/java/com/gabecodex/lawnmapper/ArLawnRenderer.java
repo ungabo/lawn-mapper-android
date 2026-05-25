@@ -37,6 +37,18 @@ final class ArLawnRenderer implements GLSurfaceView.Renderer {
         void onFailed(String message);
     }
 
+    interface ProjectBuildCallback {
+        void onBuilt(SavedProject project);
+
+        void onFailed(String message);
+    }
+
+    interface ProjectLoadCallback {
+        void onLoaded(int annotationCount);
+
+        void onFailed(String message);
+    }
+
     private static final int[] PALETTE = new int[]{
             0xFF33D17A,
             0xFF62A0EA,
@@ -146,6 +158,91 @@ final class ArLawnRenderer implements GLSurfaceView.Renderer {
             annotations.add(annotation);
         }
         mainHandler.post(() -> callback.onCreated(annotation));
+    }
+
+    void buildProjectOnGlThread(String projectName, SavedProject baseProject, ProjectBuildCallback callback) {
+        SavedProject project = new SavedProject();
+        if (baseProject != null) {
+            project.id = baseProject.id;
+            project.createdAtMillis = baseProject.createdAtMillis;
+        }
+        project.name = projectName;
+
+        float[] origin = null;
+        synchronized (annotationLock) {
+            for (ArAnnotation annotation : annotations) {
+                if (!annotation.localPoints.isEmpty()) {
+                    origin = annotation.anchor.getPose().transformPoint(annotation.localPoints.get(0));
+                    break;
+                }
+            }
+            if (origin == null) {
+                postFailed(callback, "Draw something before saving a project");
+                return;
+            }
+
+            for (ArAnnotation annotation : annotations) {
+                SavedProjectAnnotation saved = new SavedProjectAnnotation();
+                saved.type = annotation.type;
+                saved.label = annotation.label;
+                saved.color = annotation.color;
+                Pose anchorPose = annotation.anchor.getPose();
+                for (float[] localPoint : annotation.localPoints) {
+                    saved.points.add(subtract(anchorPose.transformPoint(localPoint), origin));
+                }
+                saved.labelPoint = subtract(anchorPose.transformPoint(annotation.labelLocalPoint), origin);
+                project.annotations.add(saved);
+            }
+        }
+        mainHandler.post(() -> callback.onBuilt(project));
+    }
+
+    void placeProjectOnGlThread(SavedProject project, PointF screenPoint, ProjectLoadCallback callback) {
+        if (project == null || project.annotations.isEmpty()) {
+            postFailed(callback, "Project has no saved shapes");
+            return;
+        }
+        if (latestFrame == null || session == null) {
+            postFailed(callback, "AR is not tracking yet");
+            return;
+        }
+        Camera camera = latestFrame.getCamera();
+        if (camera.getTrackingState() != TrackingState.TRACKING) {
+            postFailed(callback, "Move slowly until AR tracking is ready");
+            return;
+        }
+        float[] origin = hitGroundPoint(latestFrame, screenPoint.x, screenPoint.y);
+        if (origin == null) {
+            postFailed(callback, "Tap a detected lawn or ground plane");
+            return;
+        }
+
+        synchronized (annotationLock) {
+            for (ArAnnotation annotation : annotations) {
+                annotation.detach();
+            }
+            annotations.clear();
+
+            for (SavedProjectAnnotation saved : project.annotations) {
+                Anchor anchor = session.createAnchor(Pose.makeTranslation(origin));
+                Pose inverseAnchorPose = anchor.getPose().inverse();
+                ArrayList<float[]> localPoints = new ArrayList<>();
+                for (float[] savedPoint : saved.points) {
+                    localPoints.add(inverseAnchorPose.transformPoint(add(origin, savedPoint)));
+                }
+                float[] labelPoint = inverseAnchorPose.transformPoint(add(origin, saved.labelPoint));
+                ArAnnotation annotation = new ArAnnotation(
+                        saved.type,
+                        saved.color,
+                        anchor,
+                        localPoints,
+                        labelPoint
+                );
+                annotation.label = saved.label == null ? "" : saved.label;
+                annotations.add(annotation);
+            }
+        }
+        mainHandler.post(() -> callback.onLoaded(project.annotations.size()));
     }
 
     @Override
@@ -265,6 +362,14 @@ final class ArLawnRenderer implements GLSurfaceView.Renderer {
         mainHandler.post(() -> callback.onFailed(message));
     }
 
+    private void postFailed(ProjectBuildCallback callback, String message) {
+        mainHandler.post(() -> callback.onFailed(message));
+    }
+
+    private void postFailed(ProjectLoadCallback callback, String message) {
+        mainHandler.post(() -> callback.onFailed(message));
+    }
+
     private float[] hitGroundPoint(Frame frame, float x, float y) {
         for (HitResult hit : frame.hitTest(x, y)) {
             Trackable trackable = hit.getTrackable();
@@ -370,6 +475,14 @@ final class ArLawnRenderer implements GLSurfaceView.Renderer {
                 matrix[2] * vector[0] + matrix[6] * vector[1] + matrix[10] * vector[2] + matrix[14] * vector[3],
                 matrix[3] * vector[0] + matrix[7] * vector[1] + matrix[11] * vector[2] + matrix[15] * vector[3]
         };
+    }
+
+    private static float[] add(float[] a, float[] b) {
+        return new float[]{a[0] + b[0], a[1] + b[1], a[2] + b[2]};
+    }
+
+    private static float[] subtract(float[] a, float[] b) {
+        return new float[]{a[0] - b[0], a[1] - b[1], a[2] - b[2]};
     }
 
     private static FloatBuffer directFloatBuffer(float[] values) {
